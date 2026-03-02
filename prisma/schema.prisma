@@ -1,0 +1,328 @@
+// prisma/schema.prisma
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum Role {
+  COMPANY
+  INFLUENCER
+  ADMIN
+}
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  BANNED
+}
+
+model User {
+  id                String    @id @default(uuid())
+  email             String    @unique
+  passwordHash      String
+  role              Role
+  fullName          String
+  avatarUrl         String?
+  phone             String?
+  isEmailVerified   Boolean   @default(false)
+  status            UserStatus @default(ACTIVE)
+  createdAt         DateTime  @default(now())
+  updatedAt         DateTime  @updatedAt
+
+  companyProfile    CompanyProfile?
+  influencerProfile InfluencerProfile?
+  notifications     Notification[]
+}
+
+model CompanyProfile {
+  id                 String   @id @default(uuid())
+  userId             String   @unique
+  user               User     @relation(fields: [userId], references: [id])
+  companyName        String
+  industry           String?
+  website            String?
+  description        String?
+  logoUrl            String?
+  stripeCustomerId   String?  // Optional for MVP until they publish a campaign
+  verifiedAt         DateTime?
+
+  campaigns          Campaign[]
+}
+
+enum KYCStatus {
+  PENDING
+  SUBMITTED
+  VERIFIED
+  REJECTED
+}
+
+model InfluencerProfile {
+  id                    String   @id @default(uuid())
+  userId                String   @unique
+  user                  User     @relation(fields: [userId], references: [id])
+  bio                   String?
+  country               String?
+  kycStatus             KYCStatus @default(PENDING)
+  kycProviderRef        String?
+  idDocumentUrl         String?
+  facePhotoUrl          String?
+  stripeAccountId       String?
+  stripeOnboardingDone  Boolean   @default(false)
+  fraudScore            Int       @default(0)
+
+  socialAccounts        InfluencerSocialAccount[]
+  applications          CampaignApplication[]
+}
+
+enum Platform {
+  INSTAGRAM
+  TIKTOK
+  BOTH
+}
+
+model InfluencerSocialAccount {
+  id              String   @id @default(uuid())
+  influencerId    String
+  influencer      InfluencerProfile @relation(fields: [influencerId], references: [id])
+  platform        Platform
+  handle          String
+  followersCount  Int
+  avgViews30d     Int
+  engagementRate  Float?
+  phylloAccountId String?
+  lastVerifiedAt  DateTime?
+  isVerified      Boolean   @default(false)
+
+  @@unique([influencerId, platform, handle])
+}
+
+enum CampaignStatus {
+  DRAFT
+  ACTIVE
+  PAUSED
+  COMPLETED
+  CANCELLED
+}
+
+enum ProductDeliveryMethod {
+  COMPANY_SHIPS
+  INFLUENCER_BUYS_REIMBURSED
+}
+
+model Campaign {
+  id                     String   @id @default(uuid())
+  companyId              String
+  company                CompanyProfile @relation(fields: [companyId], references: [id])
+  title                  String
+  description            String
+  platform               Platform
+  minFollowers           Int      @default(0)
+  minAvgViews            Int      @default(0)
+  deliverableDuration    Int      // seconds
+  deliverableNotes       String?
+  pricePerVideo          Int      // stored in cents
+  maxInfluencers         Int      @default(1)
+  applicationDeadline    DateTime
+  productionDeadline     DateTime
+  status                 CampaignStatus @default(DRAFT)
+  productDeliveryMethod  ProductDeliveryMethod
+  productDetails         String?
+
+  applications           CampaignApplication[]
+}
+
+// 18 states from the plan
+enum ApplicationStatus {
+  APPLIED
+  PENDING_REVIEW
+  APPROVED_FOR_MOCK
+  MOCK_SUBMITTED
+  MOCK_APPROVED
+  AWAITING_PRODUCT
+  PRODUCT_RECEIVED
+  FINAL_SUBMITTED
+  FINAL_APPROVED
+  PENDING_PUBLICATION
+  PUBLISHED
+  PAYMENT_RELEASED
+  AUTO_REJECTED
+  MOCK_REJECTED
+  EXPIRED
+  REFUNDED
+  DISPUTED
+  CANCELLED
+  FINAL_REJECTED // added because we have a path to dispute
+}
+
+enum DisputeStatus {
+  NONE
+  OPENED
+  RESOLVED_FOR_INFLUENCER
+  RESOLVED_FOR_COMPANY
+}
+
+model CampaignApplication {
+  id                 String   @id @default(uuid())
+  campaignId         String
+  campaign           Campaign @relation(fields: [campaignId], references: [id])
+  influencerId       String
+  influencer         InfluencerProfile @relation(fields: [influencerId], references: [id])
+  status             ApplicationStatus @default(APPLIED)
+  
+  followersSnapshot  Json     // immutable at apply time
+  avgViewsSnapshot   Json     // immutable at apply time
+  
+  requirementsMet    Boolean  @default(false)
+  requirementsNotes  String?
+  rejectionReason    String?
+  rejectedBy         String?  // SYSTEM | COMPANY
+  
+  disputeStatus      DisputeStatus @default(NONE)
+  
+  appliedAt          DateTime @default(now())
+  approvedAt         DateTime?
+  completedAt        DateTime?
+
+  submissions        ContentSubmission[]
+  payment            Payment?
+  shipment           ProductShipment?
+
+  @@unique([campaignId, influencerId])
+}
+
+enum SubmissionType {
+  MOCK
+  FINAL
+}
+
+enum ReviewStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+model ContentSubmission {
+  id             String   @id @default(uuid())
+  applicationId  String
+  application    CampaignApplication @relation(fields: [applicationId], references: [id])
+  type           SubmissionType
+  
+  videoUrl       String   // S3 key
+  videoDuration  Int?
+  thumbnailUrl   String?
+  
+  muxAssetId     String?
+  muxPlaybackId  String?
+  
+  notes          String?
+  reviewStatus   ReviewStatus @default(PENDING)
+  reviewerNotes  String?
+  reviewedAt     DateTime?
+  reviewedBy     String?  // Company user ID
+  
+  publishedUrl   String?
+  publishedAt    DateTime?
+  submittedAt    DateTime @default(now())
+
+  @@index([applicationId, type])
+}
+
+enum PaymentStatus {
+  PENDING
+  CAPTURED
+  HELD_IN_ESCROW
+  RELEASED
+  REFUNDED
+  DISPUTED
+}
+
+model Payment {
+  id                    String   @id @default(uuid())
+  applicationId         String   @unique
+  application           CampaignApplication @relation(fields: [applicationId], references: [id])
+  
+  stripePaymentIntentId String?  @unique
+  stripeTransferId      String?
+  
+  grossAmountCents      Int
+  platformFeeCents      Int
+  influencerAmountCents Int
+  currency              String   @default("usd")
+  
+  status                PaymentStatus @default(PENDING)
+  capturedAt            DateTime?
+  releasedAt            DateTime?
+  refundedAt            DateTime?
+}
+
+enum ShipmentMethod {
+  SHIPPED
+  PURCHASE_REIMBURSEMENT
+}
+
+model ProductShipment {
+  id                       String   @id @default(uuid())
+  applicationId            String   @unique
+  application              CampaignApplication @relation(fields: [applicationId], references: [id])
+  
+  method                   ShipmentMethod
+  trackingNumber           String?
+  carrier                  String?
+  shippedAt                DateTime?
+  deliveredAt              DateTime?
+  
+  reimbursementAmountCents Int?
+  reimbursementReceiptUrl  String?
+}
+
+enum Channel {
+  IN_APP
+  EMAIL
+  SMS
+}
+
+model Notification {
+  id          String   @id @default(uuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id])
+  type        String
+  title       String
+  body        String
+  actionUrl   String?
+  isRead      Boolean  @default(false)
+  channel     Channel  @default(IN_APP)
+  sentAt      DateTime @default(now())
+  readAt      DateTime?
+
+  @@index([userId, isRead])
+}
+
+enum ActorType {
+  USER
+  SYSTEM
+  CRON
+}
+
+model AuditLog {
+  id          String   @id @default(uuid())
+  entityType  String
+  entityId    String
+  action      String
+  actorId     String
+  actorType   ActorType
+  
+  oldValue    Json?
+  newValue    Json?
+  
+  ipAddress   String?
+  userAgent   String?
+  createdAt   DateTime @default(now())
+
+  @@index([entityType, entityId])
+  @@index([actorId])
+}
